@@ -1,0 +1,74 @@
+# ==============================================================================
+# EKS Self-Managed GPU Node Group - 配置文件
+# 复制此文件为 terraform.tfvars 后填入实际值
+# ==============================================================================
+
+###############################################################################
+# EKS 集群信息（必填）
+###############################################################################
+
+cluster_name     = ""   # EKS 集群名称
+cluster_endpoint = ""   # EKS API server endpoint（kubectl cluster-info 可查）
+cluster_ca       = ""   # EKS cluster CA（base64），通过以下命令获取：
+                        #   aws eks describe-cluster --name <cluster> \
+                        #     --query 'cluster.certificateAuthority.data' --output text
+cluster_sg_id    = ""   # EKS cluster security group ID，通过以下命令获取：
+                        #   aws eks describe-cluster --name <cluster> \
+                        #     --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text
+
+###############################################################################
+# 网络（必填）
+###############################################################################
+
+region     = "us-west-2"
+vpc_id     = ""                # EKS 集群所在 VPC
+subnet_ids = [""]              # 节点子网（CB/ODCR 必须填锁定 AZ 的子网）
+
+###############################################################################
+# 实例配置
+###############################################################################
+
+instance_type    = "p6-b300.48xlarge"
+key_name         = ""          # EC2 Key Pair，留空则只能通过 SSM 登录
+desired_size     = 1
+min_size         = 0
+max_size         = 4
+root_volume_size = 300
+
+###############################################################################
+# 购买模式（选一种，注释掉其他的）
+###############################################################################
+
+# --- Capacity Block（推荐，正式环境）---
+# purchase_mode           = "capacity_block"
+# capacity_reservation_id = "cr-xxxxxxxxxxxxxxxxx"
+# placement_group_name    = "your-pg-name"
+
+# --- ODCR ---
+# purchase_mode           = "odcr"
+# capacity_reservation_id = "cr-xxxxxxxxxxxxxxxxx"
+# placement_group_name    = "your-pg-name"
+
+# --- On-Demand（测试用，可能 InsufficientCapacity）---
+# purchase_mode           = "on_demand"
+# capacity_reservation_id = ""
+# placement_group_name    = ""
+
+# --- Spot（验证代码用，随时可能被回收）---
+purchase_mode           = "spot"
+capacity_reservation_id = ""
+placement_group_name    = ""
+
+###############################################################################
+# EFA & 软件版本
+###############################################################################
+
+install_efa_userspace = true      # 私有子网需有 NAT 出口；纯私网设 false 用预装 AMI
+efa_installer_version = "1.48.0"  # B300 至少需要 1.47+
+eks_version           = "1.35"    # 需与集群版本一致
+
+###############################################################################
+# 命名 & 标签
+###############################################################################
+
+name_prefix = "eks-gpu-ng"
