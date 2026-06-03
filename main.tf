@@ -175,6 +175,24 @@ variable "additional_sg_ids" {
   default     = []
 }
 
+variable "existing_node_sg_id" {
+  description = "复用已有的节点 SG ID。留空则新建"
+  type        = string
+  default     = ""
+}
+
+variable "existing_node_role_arn" {
+  description = "复用已有的节点 IAM Role ARN。留空则新建"
+  type        = string
+  default     = ""
+}
+
+variable "existing_instance_profile_name" {
+  description = "复用已有的 Instance Profile 名称。留空则新建（需与 existing_node_role_arn 配套）"
+  type        = string
+  default     = ""
+}
+
 ###############################################################################
 # Data Sources
 ###############################################################################
@@ -206,7 +224,13 @@ locals {
     }
   ]
 
-  all_sg_ids = concat([aws_security_group.node.id, var.cluster_sg_id], var.additional_sg_ids)
+  # 如果传入已有 SG 则复用，否则取新建的
+  node_sg_id = var.existing_node_sg_id != "" ? var.existing_node_sg_id : aws_security_group.node[0].id
+  all_sg_ids = concat([local.node_sg_id, var.cluster_sg_id], var.additional_sg_ids)
+
+  # 如果传入已有 Role 则复用，否则取新建的
+  node_role_arn  = var.existing_node_role_arn != "" ? var.existing_node_role_arn : aws_iam_role.node[0].arn
+  node_role_name = var.existing_node_role_arn != "" ? regex("[^/]+$", var.existing_node_role_arn) : aws_iam_role.node[0].name
 
   # nodeadm 配置（EKS 1.35+ 推荐方式）
   nodeadm_config = <<-YAML
@@ -233,6 +257,7 @@ locals {
 ###############################################################################
 
 resource "aws_security_group" "node" {
+  count       = var.existing_node_sg_id == "" ? 1 : 0
   name        = "${var.name_prefix}-node-sg"
   description = "Self-managed GPU node SG"
   vpc_id      = var.vpc_id
@@ -271,7 +296,8 @@ resource "aws_security_group" "node" {
 ###############################################################################
 
 resource "aws_iam_role" "node" {
-  name = "${var.name_prefix}-node-role"
+  count = var.existing_node_role_arn == "" ? 1 : 0
+  name  = "${var.name_prefix}-node-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -283,19 +309,20 @@ resource "aws_iam_role" "node" {
 }
 
 resource "aws_iam_role_policy_attachment" "node_policies" {
-  for_each = toset([
+  for_each = var.existing_node_role_arn == "" ? toset([
     "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy",
     "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy",
     "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly",
     "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore",
-  ])
-  role       = aws_iam_role.node.name
+  ]) : toset([])
+  role       = local.node_role_name
   policy_arn = each.value
 }
 
 resource "aws_iam_instance_profile" "node" {
-  name = "${var.name_prefix}-node-profile"
-  role = aws_iam_role.node.name
+  count = var.existing_node_role_arn == "" ? 1 : 0
+  name  = "${var.name_prefix}-node-profile"
+  role  = aws_iam_role.node[0].name
 }
 
 ###############################################################################
@@ -309,7 +336,7 @@ resource "aws_launch_template" "node" {
   key_name      = var.key_name != "" ? var.key_name : null
 
   iam_instance_profile {
-    name = aws_iam_instance_profile.node.name
+    name = var.existing_node_role_arn == "" ? aws_iam_instance_profile.node[0].name : var.existing_instance_profile_name
   }
 
   # 多网卡声明
@@ -516,11 +543,15 @@ output "launch_template_id" {
 }
 
 output "node_role_arn" {
-  value = aws_iam_role.node.arn
+  value = local.node_role_arn
 }
 
 output "node_sg_id" {
-  value = aws_security_group.node.id
+  value = local.node_sg_id
+}
+
+output "instance_profile_name" {
+  value = var.existing_node_role_arn == "" ? aws_iam_instance_profile.node[0].name : var.existing_instance_profile_name
 }
 
 output "usage" {
@@ -537,7 +568,7 @@ output "usage" {
    ⚠️  首次创建后需要在 EKS 的 aws-auth ConfigMap 里添加节点 Role：
      kubectl edit configmap aws-auth -n kube-system
      # 添加：
-     # - rolearn: ${aws_iam_role.node.arn}
+     # - rolearn: ${local.node_role_arn}
      #   username: system:node:{{EC2PrivateDNSName}}
      #   groups:
      #     - system:bootstrappers
