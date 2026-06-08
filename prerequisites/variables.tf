@@ -56,15 +56,13 @@ variable "tags" {
 ###############################################################################
 
 variable "cluster_endpoint" {
-  description = "EKS API endpoint（kubernetes provider 连接用）。从 cluster/ output 获取。"
+  description = "EKS API endpoint（kubernetes provider 连接用）。从 cluster/ output 或 aws eks describe-cluster 获取。"
   type        = string
-  default     = ""
 }
 
 variable "cluster_ca" {
-  description = "EKS 集群 CA 证书 base64（kubernetes provider 连接用）。从 cluster/ output 获取。"
+  description = "EKS 集群 CA 证书 base64（kubernetes provider 连接用）。从 cluster/ output 或 aws eks describe-cluster 获取。"
   type        = string
-  default     = ""
 }
 
 variable "install_cluster_autoscaler_prereqs" {
