@@ -4,8 +4,21 @@ vpc_id                    = "vpc-xxxxxxxxxxxxxxxxx"
 cluster_security_group_id = "sg-xxxxxxxxxxxxxxxxx"
 name_prefix               = "eks-gpu"
 
-# Default true: register the node role via EKS Access Entry (API auth).
-# Set false only for CONFIG_MAP-only clusters (then use aws-auth — see README).
+# kubernetes provider 连接 EKS API 必填（用于创建 CA/ALB 的 ServiceAccount）
+# 获取方式：
+#   aws eks describe-cluster --name <集群名> --region <region> --query 'cluster.endpoint' --output text
+#   aws eks describe-cluster --name <集群名> --region <region> --query 'cluster.certificateAuthority.data' --output text
+cluster_endpoint = "https://XXXXXXXX.gr7.us-east-1.eks.amazonaws.com"
+cluster_ca       = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."
+
+# 默认 true：通过 EKS Access Entry 注册节点 role（API auth）
+# CONFIG_MAP-only 集群设 false，然后手动加 aws-auth（见 README）
 # create_access_entry = true
+
+# Cluster Autoscaler 前置（SA + IAM + Pod Identity）。客户自带 CA 时设 false。
+# install_cluster_autoscaler_prereqs = true
+
+# ALB Controller 前置（SA + IAM + Pod Identity）。不需要 ALB 时设 false。
+# install_alb_controller_prereqs = true
 
 # tags = { Team = "ml-platform", Environment = "prod" }
