@@ -1,0 +1,11 @@
+region                    = "us-east-1"
+cluster_name              = "my-eks-cluster"
+vpc_id                    = "vpc-xxxxxxxxxxxxxxxxx"
+cluster_security_group_id = "sg-xxxxxxxxxxxxxxxxx"
+name_prefix               = "eks-gpu"
+
+# Default true: register the node role via EKS Access Entry (API auth).
+# Set false only for CONFIG_MAP-only clusters (then use aws-auth — see README).
+# create_access_entry = true
+
+# tags = { Team = "ml-platform", Environment = "prod" }

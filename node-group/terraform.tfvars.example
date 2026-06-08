@@ -1,0 +1,49 @@
+###############################################################################
+# From the prerequisites stack outputs (terraform output node_group_tfvars_hint)
+###############################################################################
+region                         = "us-east-1"
+cluster_name                   = "my-eks-cluster"
+existing_node_role_arn         = "arn:aws:iam::123456789012:role/eks-gpu-node-role"
+existing_instance_profile_name = "eks-gpu-node-profile"
+existing_node_sg_id            = "sg-xxxxxxxxxxxxxxxxx"
+cluster_security_group_id      = "sg-yyyyyyyyyyyyyyyyy"
+vpc_id                         = "vpc-xxxxxxxxxxxxxxxxx"
+
+###############################################################################
+# Cluster connection (aws eks describe-cluster)
+###############################################################################
+cluster_endpoint  = "https://XXXXXXXX.gr7.us-east-1.eks.amazonaws.com"
+cluster_ca        = "LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t..."  # base64, raw value
+service_ipv4_cidr = "172.20.0.0/16"                            # your cluster's actual service CIDR
+
+###############################################################################
+# This node group
+###############################################################################
+name_prefix   = "eks-gpu-b300-odcr1"   # UNIQUE per pool
+instance_type = "p6-b300.48xlarge"
+eks_version   = "1.35"
+
+subnet_ids   = ["subnet-xxxxxxxxxxxxxxxxx"]  # single AZ for ODCR/CB
+desired_size = 1
+min_size     = 0
+max_size     = 1
+
+# Pricing: on_demand | spot | odcr | capacity_block
+purchase_mode           = "odcr"
+capacity_reservation_id = "cr-xxxxxxxxxxxxxxxxx"   # required for odcr / capacity_block
+# placement_group_name  = "my-cluster-pg"          # recommended for single-AZ multi-node NCCL
+
+# AMI: empty release version = SSM 'recommended'; pin for reproducibility
+# gpu_ami_release_version = "v20260527"
+# custom_ami_id           = "ami-xxxxxxxx"   # operator-baked AMI (overrides the above)
+
+# EFA userspace: true = install libfabric at first boot (nodes have NAT).
+# false = expect a custom AMI with libfabric pre-baked (fully air-gapped nodes).
+install_efa_userspace = true
+efa_installer_version = "1.48.0"
+
+# root_volume_size = 300
+# data_volume_size = 100
+
+# extra_node_labels = { team = "research" }
+# extra_asg_tags    = { Owner = "ml-platform", CostCenter = "1234" }
