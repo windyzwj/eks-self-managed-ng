@@ -1,28 +1,23 @@
 ###############################################################################
-# Part 2 — Self-managed GPU node group (customer side, repeatable)
+# Part 2 — Self-managed GPU 节点组（客户侧，可重复）
 #
-# Creates ONE self-managed node group: Launch Template (with EFA multi-NIC
-# layout) + ASG (no self-healing) that joins an existing EKS cluster via
-# nodeadm. Apply once per node group; use multiple copies / a wrapper module
-# with for_each for several pools (e.g. 3 ODCRs).
+# 创建一个 self-managed 节点组：Launch Template（EFA 多网卡）+ ASG（无自愈），
+# 通过 nodeadm 加入已有 EKS 集群。每个池 apply 一次；多个池用 for_each / 多份拷贝。
 #
-# Consumes the cluster-level singletons created by ../prerequisites:
+# 消费 ../prerequisites 创建的集群级单例：
 #   existing_node_role_arn, existing_instance_profile_name, existing_node_sg_id
 #
-# Lifecycle model (NO self-healing — deliberate):
-#   - suspended_processes = [ReplaceUnhealthy, AZRebalance] : the ASG never
-#     terminates+replaces an instance on its own. Instance IDs are stable.
-#   - health_check_type = "EC2" : an ALB target marked unhealthy never
-#     triggers an ASG terminate.
-#   - no instance_refresh : changing the LT does NOT roll instances.
-#   - lifecycle ignore_changes=[desired_capacity] : Cluster Autoscaler owns
-#     desired; terraform won't drift it back.
+# 生命周期模型（无自愈——刻意设计）：
+#   - suspended_processes = [ReplaceUnhealthy, AZRebalance]：ASG 永不主动替换实例，
+#     实例 ID 稳定。
+#   - health_check_type = "EC2"：ALB target unhealthy 不触发 ASG terminate。
+#   - 无 instance_refresh：改 LT 不滚动替换实例。
+#   - lifecycle ignore_changes=[desired_capacity]：CA 拥有 desired，terraform 不漂移。
 #
-# Scale up:   raise desired_size (or let your CA do it) + terraform apply
-# Retire one: aws autoscaling terminate-instance-in-auto-scaling-group \
-#               --instance-id i-xxx --should-decrement-desired-capacity
-# Upgrade AMI/LT: update LT, then drain + terminate each node yourself
-#                 (the ASG will NOT roll them automatically by design).
+# 扩容：改 desired_size + terraform apply（或让 CA 自己调）
+# 退机：aws autoscaling terminate-instance-in-auto-scaling-group \
+#          --instance-id i-xxx --should-decrement-desired-capacity
+# 升级 AMI/LT：改 LT → terraform apply → 手动逐台 drain + terminate（ASG 不会自动滚动）
 ###############################################################################
 
 terraform {
@@ -40,7 +35,7 @@ provider "aws" {
 }
 
 ###############################################################################
-# AMI lookup (EKS-optimized AL2023 NVIDIA)
+# AMI 查询（EKS-optimized AL2023 NVIDIA）
 ###############################################################################
 
 data "aws_ssm_parameter" "gpu_ami" {
@@ -53,12 +48,12 @@ data "aws_ssm_parameter" "gpu_ami" {
 }
 
 ###############################################################################
-# EFA multi-NIC layout (per instance type)
+# EFA 多网卡布局（按机型查表）
 #
-# efa_only_count : number of EFA-only NICs on indices 1..N (NIC 0 is primary).
-# primary_efa    : whether NIC 0 carries EFA (efa) or is plain ENA (interface).
-#   p6-b300 is special: NIC 0 = ENA only, NIC 1..16 = EFA-only (17 total).
-# Unknown types fall back to a single plain NIC (no EFA).
+# efa_only_count：EFA-only 网卡数量（NIC 1..N，NIC 0 是主卡）。
+# primary_efa   ：NIC 0 是否带 EFA（efa）还是纯 ENA（interface）。
+#   p6-b300 特殊：NIC 0 = 纯 ENA，NIC 1-16 = EFA-only（共 17 张）。
+# 不在表里的机型默认只有 1 张普通网卡（无 EFA）。
 ###############################################################################
 
 locals {
@@ -89,7 +84,7 @@ locals {
 
   ami_id = var.custom_ami_id != "" ? var.custom_ami_id : nonsensitive(data.aws_ssm_parameter.gpu_ami[0].value)
 
-  # GPU count per instance type — used for CA scale-from-zero resource hint.
+  # 每种机型的 GPU 数量 —— 用于 CA scale-from-zero 的资源 hint。
   gpu_count = lookup({
     "p5.48xlarge"      = 8
     "p5en.48xlarge"    = 8
@@ -106,8 +101,8 @@ locals {
     "g7e.48xlarge"     = 8
   }, var.instance_type, 0)
 
-  # K8s node labels (workload-type=gpu style, aligned with the device-plugin
-  # nodeSelector documented in ../prerequisites/MANUAL_PLUGINS.md).
+  # K8s 节点 label（workload-type=gpu 风格，与 ../prerequisites/MANUAL_PLUGINS.md
+  # 里 device-plugin 的 nodeSelector 对齐）。
   base_node_labels = {
     "workload-type"     = "gpu"
     "gpu-instance-type" = var.instance_type
@@ -138,8 +133,8 @@ locals {
     ebs_data_disk_detect_snippet = file("${path.module}/templates/detect-ebs-disk.sh")
   })
 
-  # ASG tags: CA discovery + scale-from-zero hints (so an external Cluster
-  # Autoscaler can find this ASG and reason about pod fit before launch).
+  # ASG 标签：CA 发现 + scale-from-zero hint（让外部 Cluster Autoscaler
+  # 能找到这个 ASG 并在 launch 前判断 pod 是否 fit）。
   ca_tags = merge(
     {
       "Name"                                                             = "${var.name_prefix}-node"
@@ -160,7 +155,7 @@ locals {
 }
 
 ###############################################################################
-# Launch Template (EFA multi-NIC + LVM userdata + 2 EBS volumes)
+# Launch Template（EFA 多网卡 + LVM userdata + 2 块 EBS）
 ###############################################################################
 
 resource "aws_launch_template" "node" {
@@ -181,8 +176,8 @@ resource "aws_launch_template" "node" {
     http_endpoint               = "enabled"
   }
 
-  # Primary NIC (NetworkCardIndex=0). interface=plain ENA (p6-b300) or
-  # efa=ENA+EFA combined (p5/p6-b200/g6e/g7e).
+  # 主网卡（NetworkCardIndex=0）。interface=纯 ENA（p6-b300）或
+  # efa=ENA+EFA 合一（p5/p6-b200/g6e/g7e）。
   network_interfaces {
     network_card_index    = 0
     device_index          = 0
@@ -191,8 +186,8 @@ resource "aws_launch_template" "node" {
     security_groups       = local.all_sg_ids
   }
 
-  # EFA-only NICs (NetworkCardIndex 1..efa_only_count). Each is its own
-  # physical network card; device_index stays 0 on each.
+  # EFA-only 网卡（NetworkCardIndex 1..efa_only_count）。每张是独立物理网卡;
+  # device_index 每张都是 0。
   dynamic "network_interfaces" {
     for_each = range(1, local.efa_only_count + 1)
     content {
@@ -295,7 +290,7 @@ resource "aws_launch_template" "node" {
 }
 
 ###############################################################################
-# Auto Scaling Group (NO self-healing)
+# Auto Scaling Group（无自愈）
 ###############################################################################
 
 resource "aws_autoscaling_group" "node" {
@@ -305,11 +300,11 @@ resource "aws_autoscaling_group" "node" {
   max_size            = var.max_size
   vpc_zone_identifier = var.subnet_ids
 
-  # No self-healing: ASG never replaces an instance or AZ-rebalances on its
-  # own. Instance IDs stay stable until you explicitly retire them.
+  # 无自愈：ASG 永远不主动替换实例或 AZ 再平衡。
+  # 实例 ID 稳定，直到你显式退机。
   suspended_processes = var.asg_suspended_processes
 
-  # Don't let an ALB target marked unhealthy trigger an ASG terminate.
+  # 不让 ALB target unhealthy 触发 ASG terminate。
   health_check_type         = "EC2"
   health_check_grace_period = 600
 
@@ -327,8 +322,8 @@ resource "aws_autoscaling_group" "node" {
     }
   }
 
-  # CA owns desired_capacity at runtime; don't let terraform drift it back.
-  # No instance_refresh block: LT changes do NOT roll instances (by design).
+  # CA 在运行时拥有 desired_capacity；terraform 不应漂移它。
+  # 没有 instance_refresh block：改 LT 不自动滚动实例（设计如此）。
   lifecycle {
     ignore_changes = [desired_capacity]
   }

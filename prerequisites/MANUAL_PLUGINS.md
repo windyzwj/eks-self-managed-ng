@@ -1,43 +1,39 @@
-# Manual GPU plugin install (one-time, per cluster)
+# 手动安装 GPU 插件（每集群一次）
 
-The Terraform in this directory creates the **AWS-side** prerequisites (IAM,
-SG, access entry). The **Kubernetes-side** GPU plugins are installed manually
-with `kubectl` / `helm` — once per cluster, before or after GPU nodes exist.
+本目录的 Terraform 创建的是 **AWS 侧**前置资源（IAM / SG / access entry）。
+**K8s 侧** GPU 插件用 `kubectl` / `helm` 手动装——每集群装一次,不管 GPU 节点
+是否已起来。
 
-They're DaemonSets, so installing them with **zero GPU nodes is fine**:
-`desired=0` until nodes join, then they auto-roll onto every matching node.
-Install them in your cluster-build window so node bring-up never depends on a
-helm fetch.
+它们都是 DaemonSet，**0 GPU 节点时装完全没问题**：`desired=0`，节点 join 后自动
+铺上去。在集群搭建窗口把它们装好，后续节点起来时不再依赖 helm fetch。
 
-> **Private cluster note**: your bastion may have no outbound internet. The
-> chart fetch (`helm repo add ...`) and some images (`nvcr.io`, Docker Hub)
-> may be unreachable. Mirror charts + images to your internal registry / pull
-> them in a connected window first. The EFA plugin image lives in **public
-> ECR** and is reachable through a VPC ECR endpoint without internet.
+> **私有集群提示**：堡垒机可能没外网。`helm repo add ...` 和部分镜像
+> （`nvcr.io`、Docker Hub）可能不可达。提前在有网的环境 mirror chart + image
+> 到内部 registry。EFA 插件镜像在 **公共 ECR**，通过 VPC ECR endpoint 可达，
+> 不需要外网。
 
-## nodeSelector / toleration contract
+## nodeSelector / toleration 约定
 
-Every plugin must land on GPU nodes. The `node-group` stack labels and taints
-nodes as:
+所有插件都要落在 GPU 节点上。`node-group` 创建的节点带以下 label 和 taint：
 
 ```
 labels:  workload-type=gpu
-         gpu-instance-type=<type>
-         purchase-option=<mode>
+         gpu-instance-type=<机型>
+         purchase-option=<定价模式>
 taints:  nvidia.com/gpu=true:NoSchedule
 ```
 
-So every plugin needs:
+所以每个插件都需要：
 - `nodeSelector: workload-type=gpu`
 - `toleration: key=nvidia.com/gpu, operator=Exists, effect=NoSchedule`
-- (recommended) `priorityClassName: system-node-critical`
+- （推荐）`priorityClassName: system-node-critical`
 
-## Minimum set (required for GPU + EFA workloads)
+## 必装（GPU + EFA 工作负载必需）
 
-### 1. NVIDIA device plugin — registers `nvidia.com/gpu`
+### 1. NVIDIA device plugin — 注册 `nvidia.com/gpu`
 
 ```bash
-helm repo add nvdp https://nvidia.github.io/k8s-device-plugin   # or internal mirror
+helm repo add nvdp https://nvidia.github.io/k8s-device-plugin   # 或内部 mirror
 helm repo update
 
 helm install nvidia-device-plugin nvdp/nvidia-device-plugin \
@@ -49,19 +45,18 @@ helm install nvidia-device-plugin nvdp/nvidia-device-plugin \
   --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
 ```
 
-- `mofedEnabled=false` — the AWS EFA plugin owns `/dev/infiniband/uverbs*`;
-  leaving NVIDIA's mofed on causes a conflict.
-- image `nvcr.io/nvidia/k8s-device-plugin:v0.19.1` — **needs internet or a
-  mirror**. For air-gapped nodes set `--set image.repository=<your-mirror>`.
+- `mofedEnabled=false` —— AWS EFA 插件拥有 `/dev/infiniband/uverbs*`，NVIDIA
+  的 mofed 打开会冲突。
+- 镜像 `nvcr.io/nvidia/k8s-device-plugin:v0.19.1` —— **需要外网或 mirror**。
+  air-gap 节点需设 `--set image.repository=<你的 mirror>`。
 
-### 2. EFA device plugin — registers `vpc.amazonaws.com/efa`
+### 2. EFA device plugin — 注册 `vpc.amazonaws.com/efa`
 
-The default chart's `nodeSelector` is `aws.amazon.com/efa.present=true`, which
-your nodes do NOT have. **You must override it to `workload-type=gpu`** or the
-DaemonSet never schedules.
+官方 chart 默认 `nodeSelector` 是 `aws.amazon.com/efa.present=true`，跟节点实际
+label 不匹配。**必须覆盖成 `workload-type=gpu`**，否则 DaemonSet 永远不调度。
 
 ```bash
-helm repo add eks https://aws.github.io/eks-charts   # or internal mirror
+helm repo add eks https://aws.github.io/eks-charts   # 或内部 mirror
 helm repo update
 
 helm install aws-efa-k8s-device-plugin eks/aws-efa-k8s-device-plugin \
@@ -70,16 +65,17 @@ helm install aws-efa-k8s-device-plugin eks/aws-efa-k8s-device-plugin \
   --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
 ```
 
-The EFA plugin image is in public ECR (`602401143452.dkr.ecr.<region>...`),
-reachable via a VPC ECR endpoint — no internet needed for the image itself.
+EFA 插件镜像在公共 ECR（`602401143452.dkr.ecr.<region>...`），通过 VPC ECR
+endpoint 可达——**不需要外网**。
 
-## Optional (monitoring / health)
+## 可选（监控 / 健康检查）
 
-### 3. DCGM exporter — per-pod GPU metrics
+### 3. DCGM exporter — GPU pod 级别 metrics
 
 ```bash
 helm install dcgm-exporter \
-  https://nvidia.github.io/dcgm-exporter/helm-charts/dcgm-exporter \
+  --repo https://nvidia.github.io/dcgm-exporter/helm-charts \
+  dcgm-exporter \
   --namespace kube-system \
   --version 4.8.2 \
   --set nodeSelector."workload-type"=gpu \
@@ -87,45 +83,48 @@ helm install dcgm-exporter \
   --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
 ```
 
-`serviceMonitor.enabled=false` unless you run the Prometheus Operator (else it
-fails on a missing ServiceMonitor CRD).
+`serviceMonitor.enabled=false` —— 除非你装了 Prometheus Operator，否则缺
+ServiceMonitor CRD 会 helm 报错。
 
-### 4. node-problem-detector — surfaces GPU XID / kernel errors
+### 4. node-problem-detector — 上报 GPU XID / 内核错误
 
 ```bash
 helm install node-problem-detector \
-  https://charts.deliveryhero.io/node-problem-detector \
+  --repo https://charts.deliveryhero.io/ \
+  node-problem-detector \
   --namespace kube-system \
   --version 2.3.14 \
   --set nodeSelector."workload-type"=gpu \
   --set-json 'tolerations=[{"key":"nvidia.com/gpu","operator":"Exists","effect":"NoSchedule"}]'
 ```
 
-## Verify
+## 验证
 
-Before GPU nodes exist (everything `desired=0` is normal):
+GPU 节点还没起来时（`desired=0` 是正常状态）：
 
 ```bash
 kubectl get ds -n kube-system | grep -E "efa|nvidia|dcgm|node-problem"
+# 全部 0 0 0 0 0 —— 正常，等节点
 ```
 
-After GPU nodes join (via the node-group stack):
+GPU 节点 join 后（Part 2 terraform apply 之后）：
 
 ```bash
-kubectl get ds -n kube-system | grep -E "efa|nvidia"     # desired/ready track node count
+kubectl get ds -n kube-system | grep -E "efa|nvidia"
+# desired/ready 跟上 GPU 节点数
 
 kubectl describe node <gpu-node> | grep -E "nvidia.com/gpu|vpc.amazonaws.com/efa"
 # nvidia.com/gpu:        8
 # vpc.amazonaws.com/efa: 16   (B300 = 16)
 ```
 
-## Troubleshooting
+## 排查
 
-`kubectl get pods -n kube-system -l <label> -o wide` then:
+`kubectl get pods -n kube-system -l <label> -o wide` 然后看：
 
-| Symptom | Cause | Fix |
+| 症状 | 原因 | 修法 |
 |---|---|---|
-| No pods created on a GPU node | nodeSelector mismatch | node missing `workload-type=gpu` — check node-group labels |
-| Pod Pending, "untolerated taint nvidia.com/gpu" | missing toleration | add the toleration `--set-json` above |
-| Pod ImagePullBackOff | air-gapped image | mirror image to internal registry, `--set image.repository=...` |
-| `vpc.amazonaws.com/efa` not appearing | EFA plugin not on node | confirm EFA plugin nodeSelector override applied |
+| GPU 节点上没创建 pod | nodeSelector 不匹配 | 确认节点有 `workload-type=gpu` label |
+| Pod Pending，"untolerated taint nvidia.com/gpu" | 缺 toleration | 加上面的 `--set-json tolerations=...` |
+| Pod ImagePullBackOff | air-gap 拉不到镜像 | mirror 到内部 registry，`--set image.repository=...` |
+| `vpc.amazonaws.com/efa` 没出现在节点上 | EFA 插件没铺上来 | 确认 EFA plugin 的 nodeSelector 已覆盖为 `workload-type=gpu` |

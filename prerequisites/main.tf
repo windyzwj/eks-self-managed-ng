@@ -1,28 +1,23 @@
 ###############################################################################
-# Part 1 — GPU node prerequisites (platform side, one-time)
+# Part 1 — GPU 节点前置资源（平台侧，每集群一次性）
 #
-# Creates the cluster-level singletons that ALL self-managed GPU node groups
-# share. Run this ONCE per cluster. The node-group/ stack (Part 2) consumes
-# the outputs here and can be applied many times (one per ASG).
+# 创建所有 self-managed GPU 节点组共享的集群级单例资源。每集群只跑一次。
+# node-group/ 脚本（Part 2）消费本文件的 output，可多次 apply（每个 ASG 一次）。
 #
-# What this creates:
-#   - GPU node IAM role + 4 EKS managed policies + nodeadm inline policy
-#   - Instance profile (self-managed ASGs launch from a Launch Template, which
-#     requires an instance profile — managed NGs get one implicitly)
-#   - EKS Access Entry (EC2_LINUX) so nodes using this role can join the
-#     cluster under API auth. Works alongside aws-auth on API_AND_CONFIG_MAP
-#     clusters; see README for the aws-auth fallback.
-#   - GPU security group with EFA self-allow (required for cross-node NCCL)
-#   - Cluster SG ingress from the node SG (managed NGs got this auto from EKS)
+# 创建的内容：
+#   - GPU 节点 IAM role + 4 个 EKS managed policy + nodeadm 内联 policy
+#   - Instance profile（self-managed ASG 从 LT 起实例时必须有——Managed NG 隐式创建）
+#   - EKS Access Entry（EC2_LINUX）让使用此 role 的节点能通过 API auth 加入集群
+#     在 API_AND_CONFIG_MAP 集群上与 aws-auth 共存；见 README 的 aws-auth 备选方案
+#   - GPU 安全组 + EFA 自通规则（跨节点 NCCL 必须）
+#   - Cluster SG 入向规则，来自节点 SG（Managed NG 由 EKS 自动加，self-managed 需显式声明）
 #
-# These are deliberately NOT in the node-group stack because:
-#   - The IAM role / access entry are cluster-level singletons. One per
-#     cluster, shared by every GPU ASG. Creating them per-ASG would produce
-#     duplicate roles and conflicting access entries.
-#   - The GPU SG must be shared so EFA traffic flows across ASGs (NCCL
-#     all-reduce spans nodes in different ASGs).
-#   - These touch iam:* / eks:CreateAccessEntry — typically platform/security
-#     team permissions, not the app team that scales node groups.
+# 为什么这些不在 node-group 里：
+#   - IAM role / access entry 是集群级单例——一个集群一份，所有 GPU ASG 共享
+#     如果每个 ASG 各建一份，会产生重复 role 和冲突的 access entry
+#   - GPU SG 必须共享——EFA 流量要求所有 GPU 节点在同一 SG（跨 ASG 也是）
+#   - 这些操作涉及 iam:* / eks:CreateAccessEntry —— 通常是平台/安全团队权限
+#     不应下放给扩缩节点组的应用团队
 ###############################################################################
 
 terraform {
@@ -42,7 +37,7 @@ provider "aws" {
 data "aws_partition" "current" {}
 
 ###############################################################################
-# IAM role for GPU nodes (cluster-wide singleton)
+# GPU 节点 IAM role（集群级单例，所有 GPU ASG 共享）
 ###############################################################################
 
 resource "aws_iam_role" "gpu_node" {
@@ -71,8 +66,8 @@ resource "aws_iam_role_policy_attachment" "gpu_node" {
   policy_arn = each.value
 }
 
-# nodeadm (EKS 1.34+) needs ec2:DescribeInstances / DescribeTags to
-# self-discover instance metadata during bootstrap.
+# nodeadm（EKS 1.34+）启动时需要 ec2:DescribeInstances / DescribeTags
+# 用于自动发现实例元数据。
 resource "aws_iam_role_policy" "gpu_nodeadm" {
   name = "NodeadmDescribeInstances"
   role = aws_iam_role.gpu_node.id
@@ -94,13 +89,12 @@ resource "aws_iam_instance_profile" "gpu_node" {
 }
 
 ###############################################################################
-# EKS Access Entry — register the node role with the cluster (API auth)
+# EKS Access Entry —— 把节点 role 注册进集群（API 认证）
 #
-# On an API_AND_CONFIG_MAP cluster both this and aws-auth work; we default to
-# Access Entry because it's TF-managed, auditable, and the direction AWS is
-# moving (aws-auth is being phased out). Set create_access_entry=false if your
-# cluster is CONFIG_MAP-only or you manage node auth via aws-auth — then add
-# the role to aws-auth manually (see README).
+# API_AND_CONFIG_MAP 集群上 Access Entry 和 aws-auth 都生效；默认使用 Access Entry
+# 因为它可 TF 管理、可审计，且是 AWS 推荐方向（aws-auth 逐步废弃）。
+# 如果集群是 CONFIG_MAP-only 或你选择用 aws-auth，设 create_access_entry=false
+# 然后手动把 role 加进 aws-auth（见 README）。
 ###############################################################################
 
 resource "aws_eks_access_entry" "gpu_node" {
@@ -112,11 +106,10 @@ resource "aws_eks_access_entry" "gpu_node" {
 }
 
 ###############################################################################
-# GPU security group (cluster-wide singleton, EFA self-allow)
+# GPU 安全组（集群级单例，EFA 自通）
 #
-# Shared by every GPU ASG so EFA / NCCL traffic flows across nodes regardless
-# of which ASG they belong to. The self-referencing all-traffic rules are
-# required by AWS for EFA (libfabric) cross-node communication.
+# 所有 GPU ASG 共享——EFA/NCCL 流量必须跨节点互通，不管节点属于哪个 ASG。
+# 自引用全协议规则是 AWS 对 EFA（libfabric）跨节点通信的硬性要求。
 ###############################################################################
 
 resource "aws_security_group" "gpu_node" {
@@ -130,7 +123,7 @@ resource "aws_security_group" "gpu_node" {
   })
 }
 
-# EFA self-allow (all protocols within the SG) — required for NCCL.
+# EFA 自通（SG 内全协议互通）—— NCCL 必须。
 resource "aws_vpc_security_group_ingress_rule" "gpu_self" {
   security_group_id            = aws_security_group.gpu_node.id
   referenced_security_group_id = aws_security_group.gpu_node.id
@@ -145,7 +138,7 @@ resource "aws_vpc_security_group_egress_rule" "gpu_self" {
   description                  = "EFA self-egress"
 }
 
-# General egress (image pull via NAT / VPC endpoints, EFA installer, etc.)
+# 通用出向（镜像拉取走 NAT / VPC endpoint，EFA installer 等）
 resource "aws_vpc_security_group_egress_rule" "gpu_all" {
   security_group_id = aws_security_group.gpu_node.id
   cidr_ipv4         = "0.0.0.0/0"
@@ -153,9 +146,8 @@ resource "aws_vpc_security_group_egress_rule" "gpu_all" {
   description       = "Allow all egress"
 }
 
-# Cluster SG must accept traffic from the node SG (kubelet -> API server,
-# control plane -> kubelet). Managed NGs got this automatically from EKS;
-# self-managed must declare it.
+# Cluster SG 必须接受节点 SG 的流量（kubelet -> API server，控制面 -> kubelet）。
+# Managed NG 由 EKS 自动加；self-managed 必须显式声明。
 resource "aws_vpc_security_group_ingress_rule" "cluster_from_node" {
   security_group_id            = var.cluster_security_group_id
   referenced_security_group_id = aws_security_group.gpu_node.id

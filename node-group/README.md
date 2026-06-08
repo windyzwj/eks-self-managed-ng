@@ -1,37 +1,35 @@
-# Part 2 — Self-Managed GPU Node Group (customer, repeatable)
+# Part 2 — Self-Managed GPU 节点组（客户侧，可重复）
 
-Stands up **one** self-managed GPU node group — a Launch Template (with EFA
-multi-NIC layout) + an ASG (no self-healing) that joins an existing EKS
-cluster via `nodeadm`. Apply once per pool; copy the directory or wrap in a
-`for_each` module for several pools (e.g. 3 ODCRs).
+创建**一个** self-managed GPU 节点组：Launch Template（EFA 多网卡）+ ASG（无自愈），
+节点通过 `nodeadm` 加入已有 EKS 集群。每个池 apply 一次；多个池（如 3 个 ODCR）
+用 `for_each` / 多份拷贝。
 
-Depends on [`../prerequisites`](../prerequisites) having been applied — it
-consumes that stack's IAM role / instance profile / node SG outputs.
+依赖 [`../prerequisites`](../prerequisites) 已 apply 完——消费那边的 IAM role /
+instance profile / node SG output。
 
-## Lifecycle model — NO self-healing (deliberate)
+## 生命周期模型 —— 无自愈（刻意设计）
 
-| Setting | Effect |
+| 配置 | 效果 |
 |---|---|
-| `suspended_processes = [ReplaceUnhealthy, AZRebalance]` | ASG never terminates+replaces an instance on its own → **instance IDs are stable** |
-| `health_check_type = "EC2"` | ALB target marked unhealthy never triggers an ASG terminate |
-| no `instance_refresh` | changing the Launch Template does **not** roll instances |
-| `lifecycle ignore_changes=[desired_capacity]` | Cluster Autoscaler owns desired; terraform won't drift it back |
+| `suspended_processes = [ReplaceUnhealthy, AZRebalance]` | ASG 永远不主动替换实例 → **实例 ID 稳定** |
+| `health_check_type = "EC2"` | ALB target unhealthy 不触发 ASG terminate |
+| 无 `instance_refresh` | 改 Launch Template 不滚动替换实例 |
+| `lifecycle ignore_changes=[desired_capacity]` | Cluster Autoscaler 拥有 desired；terraform 不会漂移它 |
 
-You own node lifecycle: failed nodes stay until you act; K8s upgrades are a
-manual cordon/drain/terminate you drive.
+你拥有节点生命周期：故障节点留着等你处理；K8s 升级是你驱动的 cordon/drain/terminate。
 
-## Apply
+## 使用
 
 ```bash
 cd node-group
-# Paste the hint block from `terraform output node_group_tfvars_hint` in Part 1,
-# then add the pool-specific bits:
+# 粘贴 Part 1 的 `terraform output node_group_tfvars_hint` 输出,
+# 再加本池子的参数:
 cat >> terraform.tfvars <<EOF
 cluster_endpoint  = "https://XXXX.gr7.<region>.eks.amazonaws.com"
-cluster_ca        = "LS0tLS1CRUdJ...."     # base64, raw describe-cluster value
-service_ipv4_cidr = "172.20.0.0/16"        # your cluster's actual service CIDR
-subnet_ids        = ["subnet-xxxx"]        # single AZ for ODCR/CB
-name_prefix       = "eks-gpu-b300-odcr1"   # UNIQUE per pool
+cluster_ca        = "LS0tLS1CRUdJ...."     # base64 原值
+service_ipv4_cidr = "172.20.0.0/16"        # 你集群的实际 service CIDR
+subnet_ids        = ["subnet-xxxx"]        # 单 AZ（ODCR/CB 对应 AZ）
+name_prefix       = "eks-gpu-b300-odcr1"   # 每个池子唯一
 instance_type     = "p6-b300.48xlarge"
 purchase_mode     = "odcr"
 capacity_reservation_id = "cr-xxxx"
@@ -44,72 +42,72 @@ terraform init
 terraform apply
 ```
 
-Gather cluster_endpoint / cluster_ca / service_ipv4_cidr:
+获取 cluster_endpoint / cluster_ca / service_ipv4_cidr：
 
 ```bash
-aws eks describe-cluster --name <c> --region <r> --query 'cluster.endpoint' --output text
-aws eks describe-cluster --name <c> --region <r> --query 'cluster.certificateAuthority.data' --output text
-aws eks describe-cluster --name <c> --region <r> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text
+aws eks describe-cluster --name <集群名> --region <region> --query 'cluster.endpoint' --output text
+aws eks describe-cluster --name <集群名> --region <region> --query 'cluster.certificateAuthority.data' --output text
+aws eks describe-cluster --name <集群名> --region <region> --query 'cluster.kubernetesNetworkConfig.serviceIpv4Cidr' --output text
 ```
 
-## EFA multi-NIC — automatic per instance type
+## EFA 多网卡 —— 按机型自动
 
-You only set `instance_type`; the NIC layout is looked up internally:
+只设 `instance_type`，NIC 布局内部查表：
 
-| instance_type | NICs | layout |
+| 机型 | 网卡总数 | 布局 |
 |---|---|---|
-| p6-b300.48xlarge | 17 | NIC0 = plain ENA, NIC1-16 = EFA-only |
-| p5.48xlarge | 32 | NIC0 = ENA+EFA, NIC1-31 = EFA-only |
-| p5en.48xlarge | 16 | NIC0 = ENA+EFA, NIC1-15 = EFA-only |
-| p6-b200.48xlarge | 8 | NIC0 = ENA+EFA, NIC1-7 = EFA-only |
-| g6e/g7e.* | 1-4 | see code |
+| p6-b300.48xlarge | 17 | NIC0 = 纯 ENA，NIC1-16 = EFA-only |
+| p5.48xlarge | 32 | NIC0 = ENA+EFA，NIC1-31 = EFA-only |
+| p5en.48xlarge | 16 | NIC0 = ENA+EFA，NIC1-15 = EFA-only |
+| p6-b200.48xlarge | 8 | NIC0 = ENA+EFA，NIC1-7 = EFA-only |
+| g6e/g7e.* | 1-4 | 见代码 |
 
-**Do not hand-write network interfaces** — the layout table handles it.
-Override only with `efa_card_count_override` for an unlisted type.
+**禁止手写 network interfaces** —— 布局表自动处理。只有不在表里的新机型才用
+`efa_card_count_override` 手动指定。
 
-## Pricing modes
+## 定价模式
 
-| `purchase_mode` | extra inputs |
+| `purchase_mode` | 额外输入 |
 |---|---|
-| `on_demand` | — |
-| `spot` | — (one-time, terminate-on-interruption) |
-| `odcr` | `capacity_reservation_id` (required) |
-| `capacity_block` | `capacity_reservation_id` (required) |
+| `on_demand` | 无 |
+| `spot` | 无（one-time，中断即 terminate） |
+| `odcr` | `capacity_reservation_id`（必填） |
+| `capacity_block` | `capacity_reservation_id`（必填） |
 
-## Day-2 operations
+## Day-2 操作
 
 ```bash
-# Scale: edit desired_size -> terraform apply (or let Cluster Autoscaler do it)
+# 扩缩容：改 desired_size -> terraform apply（或让 Cluster Autoscaler 自己调）
 
-# Retire ONE specific node (IDs are stable; nothing auto-replaces it):
+# 退指定节点（实例 ID 稳定，不会自动补）：
 kubectl cordon <node>
 kubectl drain  <node> --ignore-daemonsets --delete-emptydir-data
 kubectl delete node <node>
 aws autoscaling terminate-instance-in-auto-scaling-group \
   --instance-id i-xxx --should-decrement-desired-capacity --region <region>
 
-# Upgrade AMI/LT (NOT automatic):
-#   update gpu_ami_release_version -> terraform apply (new LT version)
-#   then drain + terminate each node; replacements come up on the new template.
+# 升级 AMI/LT（不会自动滚动——设计如此）：
+#   修改 gpu_ami_release_version -> terraform apply（新 LT version）
+#   然后逐台 drain + terminate；CA 或 desired_size 会拉起新机器用新模板
 ```
 
 ## Cluster Autoscaler
 
-This stack inlines the discovery + scale-from-zero tags on the ASG:
+本 stack 在 ASG 上 inline 了 discovery + scale-from-zero tag：
 
 ```
 k8s.io/cluster-autoscaler/enabled = true
-k8s.io/cluster-autoscaler/<cluster> = owned
+k8s.io/cluster-autoscaler/<集群名> = owned
 k8s.io/cluster-autoscaler/node-template/label/workload-type = gpu
-k8s.io/cluster-autoscaler/node-template/label/gpu-instance-type = <type>
+k8s.io/cluster-autoscaler/node-template/label/gpu-instance-type = <机型>
 k8s.io/cluster-autoscaler/node-template/taint/nvidia.com/gpu = true:NoSchedule
-k8s.io/cluster-autoscaler/node-template/resources/nvidia.com/gpu = <count>
-k8s.io/cluster-autoscaler/node-template/resources/vpc.amazonaws.com/efa = <count>
+k8s.io/cluster-autoscaler/node-template/resources/nvidia.com/gpu = <数量>
+k8s.io/cluster-autoscaler/node-template/resources/vpc.amazonaws.com/efa = <数量>
 ```
 
-Bring your own CA with:
+自带 CA 启动参数建议：
 ```
---node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/<cluster>,k8s.io/cluster-autoscaler/enabled
+--node-group-auto-discovery=asg:tag=k8s.io/cluster-autoscaler/<集群名>,k8s.io/cluster-autoscaler/enabled
 --balance-similar-node-groups
 --max-node-provision-time=15m
 ```

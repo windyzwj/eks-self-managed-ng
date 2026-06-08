@@ -1,66 +1,62 @@
-# EKS Self-Managed GPU Node Groups
+# EKS Self-Managed GPU 节点组
 
-Self-managed GPU node groups for an **existing** EKS cluster — EFA multi-NIC
-(B300 / p5 / p6 / g6e / g7e), LVM storage, flexible pricing (OD / Spot / ODCR /
-Capacity Block), and **no ASG self-healing** (stable instance IDs, customer-
-driven lifecycle).
+为**已有** EKS 集群提供自管 GPU 节点组 —— EFA 多网卡（B300 / p5 / p6 / g6e /
+g7e）、LVM 存储、灵活定价（OD / Spot / ODCR / Capacity Block），且 **ASG 不自愈**
+（实例 ID 稳定，客户驱动生命周期）。
 
-Designed for **private clusters** where the platform team owns the cluster and
-the cluster-level prerequisites, and an application team stands up / scales GPU
-node groups on top.
+适用于**私有集群**：平台团队拥有集群和集群级前置资源，应用团队在其上按需拉起/扩缩
+GPU 节点组。
 
-## Two-part layout (recommended)
+## 两段式结构（推荐）
 
 ```
-prerequisites/    Part 1 — platform, ONE-TIME per cluster (Terraform)
+prerequisites/    Part 1 — 平台侧，每集群 一次性（Terraform）
                   IAM role + instance profile + EKS access entry +
-                  shared GPU SG (EFA self-allow) + cluster SG ingress
-                  └─ MANUAL_PLUGINS.md: kubectl/helm install for the
-                     Kubernetes GPU plugins (EFA + NVIDIA device plugin, ...)
+                  共享 GPU SG（EFA 自通）+ cluster SG 入向规则
+                  └─ MANUAL_PLUGINS.md: kubectl/helm 手动装 K8s GPU 插件
+                     （EFA + NVIDIA device plugin 等）
 
-node-group/       Part 2 — per pool, REPEATABLE (Terraform)
-                  Launch Template (EFA multi-NIC) + ASG (no self-healing) +
-                  scaling. Consumes Part 1 outputs. One apply per pool;
-                  for_each / copies for several pools (e.g. 3 ODCRs).
+node-group/       Part 2 — 客户侧，可重复（Terraform）
+                  Launch Template（EFA 多网卡）+ ASG（无自愈）+
+                  扩缩容。引用 Part 1 的 output。每个节点池 apply 一次;
+                  多个池（如 3 个 ODCR）用 for_each / 多份拷贝。
 
-legacy-single-file/   The original all-in-one main.tf (reference only)
+legacy-single-file/   旧版单文件（仅供参考）
 ```
 
-### Why split
+### 为什么拆分
 
-| Concern | Lives in | Reason |
+| 关注点 | 所在位置 | 原因 |
 |---|---|---|
-| IAM role / access entry | prerequisites | Cluster-level singleton; one shared role, not one-per-ASG. Touches iam:* / eks:CreateAccessEntry (platform/security perms). |
-| GPU security group | prerequisites | Must be shared so EFA/NCCL spans nodes across different ASGs. |
-| GPU plugins (EFA / NVIDIA) | prerequisites (manual) | DaemonSets, installed once; install in a connected window so node bring-up never waits on a helm fetch. |
-| Launch Template + ASG | node-group | The thing you create/scale repeatedly. App team owns it, references the platform outputs, needs no IAM-create perms. |
+| IAM role / access entry | prerequisites | 集群级单例；一个共享 role，不是每个 ASG 一个。需要 iam:* / eks:CreateAccessEntry 权限（平台/安全团队权限）|
+| GPU 安全组 | prerequisites | 必须共享——EFA/NCCL 流量要求所有 GPU 节点在同一 SG 内互通，跨 ASG 也是 |
+| GPU 插件（EFA / NVIDIA） | prerequisites（手动） | DaemonSet，装一次即可；在有网络的窗口装好，节点起来时不再依赖 helm fetch |
+| Launch Template + ASG | node-group | 可重复创建/扩缩的部分。应用团队拥有，引用平台 output，不需要 IAM 创建权限 |
 
-## Flow
+## 流程
 
 ```
-1. platform: cd prerequisites && terraform apply
-              └─ copy `node_group_tfvars_hint` output
-2. platform: kubectl/helm install GPU plugins  (prerequisites/MANUAL_PLUGINS.md)
-3. app team: cd node-group && terraform apply   (paste hint + pool specifics)
-   repeat step 3 for each additional pool
+1. 平台: cd prerequisites && terraform apply
+          └─ 复制 `node_group_tfvars_hint` output
+2. 平台: kubectl/helm 手动装 GPU 插件（prerequisites/MANUAL_PLUGINS.md）
+3. 应用团队: cd node-group && terraform apply（粘贴 hint + 填池子参数）
+   对每个额外池重复步骤 3
 ```
 
-## Key design points
+## 核心设计点
 
-- **No self-healing** — `suspended_processes=[ReplaceUnhealthy,AZRebalance]`,
-  `health_check_type=EC2`, no `instance_refresh`. Instance IDs are stable;
-  you retire specific nodes with
-  `terminate-instance-in-auto-scaling-group --instance-id ... --should-decrement-desired-capacity`.
-- **EFA multi-NIC is automatic** — you set `instance_type`, the NIC layout
-  (e.g. B300 = 17 NICs) is looked up internally. Never hand-write NICs.
-- **External Cluster Autoscaler ready** — ASGs carry the standard discovery +
-  scale-from-zero tags; bring your own CA, zero extra config.
-- **Private cluster aware** — nodes pull via NAT / VPC endpoints. EFA installer
-  fetched at boot (set `install_efa_userspace=false` for fully air-gapped nodes
-  using an AMI with libfabric pre-baked). See per-stack READMEs.
+- **无自愈** —— `suspended_processes=[ReplaceUnhealthy,AZRebalance]`，
+  `health_check_type=EC2`，无 `instance_refresh`。实例 ID 稳定；
+  用 `terminate-instance-in-auto-scaling-group --instance-id ... --should-decrement-desired-capacity` 退指定机器。
+- **EFA 多网卡自动** —— 只设 `instance_type`，NIC 布局（如 B300 = 17 NIC）
+  内部查表自动生成。禁止手写网卡配置。
+- **外部 Cluster Autoscaler 就绪** —— ASG 上带标准 discovery + scale-from-zero
+  tag；自带 CA 零额外配置。
+- **私有集群感知** —— 节点通过 NAT / VPC endpoint 拉取。EFA installer 启动时
+  拉取（`install_efa_userspace=false` 可关闭，改用预装 libfabric 的自定义 AMI）。
 
-## Start here
+## 开始
 
 - [prerequisites/README.md](prerequisites/README.md) — Part 1
-- [prerequisites/MANUAL_PLUGINS.md](prerequisites/MANUAL_PLUGINS.md) — GPU plugins
+- [prerequisites/MANUAL_PLUGINS.md](prerequisites/MANUAL_PLUGINS.md) — GPU 插件
 - [node-group/README.md](node-group/README.md) — Part 2

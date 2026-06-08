@@ -1,45 +1,47 @@
-# Part 1 — GPU Node Prerequisites (platform, one-time)
+# Part 1 — GPU 节点前置资源（平台侧，一次性）
 
-Creates the **cluster-level singletons** that every self-managed GPU node
-group shares. Run once per cluster. The [`../node-group`](../node-group) stack
-consumes the outputs here.
+创建**集群级单例资源**，供所有 self-managed GPU 节点组共享。每集群只跑一次。
+[`../node-group`](../node-group)（Part 2）消费本目录的 output。
 
-## What it creates (AWS, via Terraform)
+## 创建的资源（AWS，Terraform）
 
-| Resource | Why it's here (not per-ASG) |
+| 资源 | 为什么放这里（不是每个 ASG 各建一份）|
 |---|---|
-| GPU node IAM role + 4 EKS managed policies + nodeadm inline policy | Cluster-level singleton — one role shared by all GPU ASGs |
-| Instance profile | Self-managed ASGs launch from a Launch Template, which needs an instance profile |
-| EKS Access Entry (`EC2_LINUX`) | Registers the role with the cluster so nodes can join (API auth) |
-| GPU security group + EFA self-allow rules | Shared SG so EFA/NCCL traffic flows across nodes in different ASGs |
-| Cluster SG ingress from node SG | Managed NGs got this from EKS automatically; self-managed must declare it |
+| GPU 节点 IAM role + 4 个 EKS managed policy + nodeadm 内联 policy | 集群级单例——一个 role 被所有 GPU ASG 共享 |
+| Instance profile | Self-managed ASG 从 LT 起实例时需要 instance profile |
+| EKS Access Entry（`EC2_LINUX`）| 把 role 注册进集群，节点能通过 API auth join |
+| GPU 安全组 + EFA 自通规则 | 共享 SG，EFA/NCCL 流量能跨不同 ASG 的节点 |
+| Cluster SG 入向规则（来自 node SG）| Managed NG 由 EKS 自动加；self-managed 必须显式声明 |
 
-## What it does NOT create
+## 不创建的东西
 
-- The node groups themselves (ASG / Launch Template) — that's [`../node-group`](../node-group).
-- The Kubernetes GPU plugins (EFA / NVIDIA device plugin) — those are
-  installed manually, see [MANUAL_PLUGINS.md](MANUAL_PLUGINS.md).
+- 节点组本身（ASG / Launch Template）—— 在 [`../node-group`](../node-group)
+- K8s GPU 插件（EFA / NVIDIA device plugin）—— 手动装，见
+  [MANUAL_PLUGINS.md](MANUAL_PLUGINS.md)
 
-## Prerequisites
+## 前提条件
 
-- An existing **private** EKS cluster.
-- Cluster auth mode `API_AND_CONFIG_MAP` or `API` (so Access Entry works).
-  If your cluster is `CONFIG_MAP`-only, set `create_access_entry=false` and
-  add the role to aws-auth manually (see below).
+- 已有一个**私有** EKS 集群
+- 集群 auth mode 为 `API_AND_CONFIG_MAP` 或 `API`（Access Entry 才能生效）。
+  如果集群是 `CONFIG_MAP` only，设 `create_access_entry=false` 然后手动把 role
+  加进 aws-auth（见下文）
 
-## Inputs you need to gather
+## 需要收集的输入
 
 ```bash
-CLUSTER=<your-cluster>
-REGION=<your-region>
+CLUSTER=<集群名>
+REGION=<region>
 
+# cluster_security_group_id
 aws eks describe-cluster --name $CLUSTER --region $REGION \
-  --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text   # cluster_security_group_id
+  --query 'cluster.resourcesVpcConfig.clusterSecurityGroupId' --output text
+
+# vpc_id
 aws eks describe-cluster --name $CLUSTER --region $REGION \
-  --query 'cluster.resourcesVpcConfig.vpcId' --output text                    # vpc_id
+  --query 'cluster.resourcesVpcConfig.vpcId' --output text
 ```
 
-## Apply
+## 使用
 
 ```bash
 cd prerequisites
@@ -55,30 +57,30 @@ terraform init
 terraform apply
 ```
 
-The `node_group_tfvars_hint` output prints a ready-to-paste block for the
-node-group stack's `terraform.tfvars`.
+apply 完成后 `terraform output node_group_tfvars_hint` 会打印一段可直接粘到
+node-group 的 `terraform.tfvars` 里的参数块。
 
-## aws-auth fallback (only if create_access_entry=false)
+## aws-auth 备选方案（仅 create_access_entry=false 时需要）
 
 ```bash
 kubectl edit configmap aws-auth -n kube-system
-# add under mapRoles:
-# - rolearn: <gpu_node_role_arn output>
+# 在 mapRoles 下加：
+# - rolearn: <gpu_node_role_arn output 的值>
 #   username: system:node:{{EC2PrivateDNSName}}
 #   groups:
 #     - system:bootstrappers
 #     - system:nodes
 ```
 
-## Outputs (feed into Part 2)
+## Output（喂给 Part 2）
 
-| Output | node-group variable |
+| Output | node-group 变量 |
 |---|---|
 | `gpu_node_role_arn` | `existing_node_role_arn` |
 | `gpu_instance_profile_name` | `existing_instance_profile_name` |
 | `gpu_node_sg_id` | `existing_node_sg_id` |
 
-## Next steps
+## 下一步
 
-1. Install Kubernetes GPU plugins — [MANUAL_PLUGINS.md](MANUAL_PLUGINS.md)
-2. Stand up node groups — [../node-group/README.md](../node-group/README.md)
+1. 手动装 K8s GPU 插件 —— [MANUAL_PLUGINS.md](MANUAL_PLUGINS.md)
+2. 拉起节点组 —— [../node-group/README.md](../node-group/README.md)
