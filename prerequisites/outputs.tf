@@ -23,6 +23,16 @@ output "access_entry_created" {
   value       = var.create_access_entry
 }
 
+output "cluster_autoscaler_role_arn" {
+  description = "Cluster Autoscaler IAM role ARN（空 = install_cluster_autoscaler_prereqs=false）"
+  value       = var.install_cluster_autoscaler_prereqs ? aws_iam_role.cluster_autoscaler[0].arn : ""
+}
+
+output "alb_controller_role_arn" {
+  description = "ALB Controller IAM role ARN（空 = install_alb_controller_prereqs=false）"
+  value       = var.install_alb_controller_prereqs ? aws_iam_role.alb_controller[0].arn : ""
+}
+
 output "node_group_tfvars_hint" {
   description = "可直接粘贴到 node-group/terraform.tfvars 的参数块"
   value       = <<-EOT

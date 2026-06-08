@@ -27,11 +27,28 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.50"
     }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.33"
+    }
   }
 }
 
 provider "aws" {
   region = var.region
+}
+
+# kubernetes provider 用于创建 ServiceAccount（CA / ALB 的 Pod Identity 前置）。
+# 如果 install_cluster_autoscaler_prereqs 和 install_alb_controller_prereqs 都为
+# false，provider 配了但不会真正调用（无 kubernetes_ resource 创建）。
+provider "kubernetes" {
+  host                   = var.cluster_endpoint
+  cluster_ca_certificate = base64decode(var.cluster_ca)
+  exec {
+    api_version = "client.authentication.k8s.io/v1beta1"
+    command     = "aws"
+    args        = ["eks", "get-token", "--cluster-name", var.cluster_name, "--region", var.region]
+  }
 }
 
 data "aws_partition" "current" {}
@@ -153,4 +170,137 @@ resource "aws_vpc_security_group_ingress_rule" "cluster_from_node" {
   referenced_security_group_id = aws_security_group.gpu_node.id
   ip_protocol                  = "-1"
   description                  = "Self-managed GPU nodes to cluster API/control plane"
+}
+
+###############################################################################
+# Cluster Autoscaler — SA + IAM role + Pod Identity Association
+#
+# helm install 放在 MANUAL_PLUGINS.md 手动装（需要 system node 跑 pod）。
+# 这里只建 SA + IAM（不依赖 node 存在）。
+###############################################################################
+
+resource "aws_iam_role" "cluster_autoscaler" {
+  count = var.install_cluster_autoscaler_prereqs ? 1 : 0
+  name  = "${var.name_prefix}-cluster-autoscaler"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+}
+
+resource "aws_iam_role_policy" "cluster_autoscaler" {
+  count = var.install_cluster_autoscaler_prereqs ? 1 : 0
+  name  = "ClusterAutoscalerPolicy"
+  role  = aws_iam_role.cluster_autoscaler[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:DescribeAutoScalingGroups",
+          "autoscaling:DescribeAutoScalingInstances",
+          "autoscaling:DescribeLaunchConfigurations",
+          "autoscaling:DescribeScalingActivities",
+          "autoscaling:DescribeTags",
+          "ec2:DescribeImages",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeLaunchTemplateVersions",
+          "ec2:GetInstanceTypesFromInstanceRequirements",
+          "eks:DescribeNodegroup",
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "autoscaling:SetDesiredCapacity",
+          "autoscaling:TerminateInstanceInAutoScalingGroup",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "autoscaling:ResourceTag/k8s.io/cluster-autoscaler/${var.cluster_name}" = "owned"
+          }
+        }
+      },
+    ]
+  })
+}
+
+resource "kubernetes_service_account_v1" "cluster_autoscaler" {
+  count = var.install_cluster_autoscaler_prereqs ? 1 : 0
+  metadata {
+    name      = "cluster-autoscaler"
+    namespace = "kube-system"
+    labels    = { "app.kubernetes.io/name" = "cluster-autoscaler" }
+  }
+}
+
+resource "aws_eks_pod_identity_association" "cluster_autoscaler" {
+  count           = var.install_cluster_autoscaler_prereqs ? 1 : 0
+  cluster_name    = var.cluster_name
+  namespace       = "kube-system"
+  service_account = "cluster-autoscaler"
+  role_arn        = aws_iam_role.cluster_autoscaler[0].arn
+  depends_on      = [kubernetes_service_account_v1.cluster_autoscaler]
+}
+
+###############################################################################
+# ALB Controller — SA + IAM policy/role + Pod Identity Association
+#
+# helm install 放在 MANUAL_PLUGINS.md 手动装。
+###############################################################################
+
+resource "aws_iam_role" "alb_controller" {
+  count = var.install_alb_controller_prereqs ? 1 : 0
+  name  = "${var.name_prefix}-alb-controller"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "pods.eks.amazonaws.com" }
+      Action    = ["sts:AssumeRole", "sts:TagSession"]
+    }]
+  })
+}
+
+resource "aws_iam_policy" "alb_controller" {
+  count  = var.install_alb_controller_prereqs ? 1 : 0
+  name   = "${var.name_prefix}-alb-controller-policy"
+  policy = file("${path.module}/alb-controller-iam-policy.json")
+}
+
+resource "aws_iam_role_policy_attachment" "alb_controller" {
+  count      = var.install_alb_controller_prereqs ? 1 : 0
+  role       = aws_iam_role.alb_controller[0].name
+  policy_arn = aws_iam_policy.alb_controller[0].arn
+}
+
+resource "kubernetes_service_account_v1" "alb_controller" {
+  count = var.install_alb_controller_prereqs ? 1 : 0
+  metadata {
+    name      = "aws-load-balancer-controller"
+    namespace = "kube-system"
+    labels = {
+      "app.kubernetes.io/name"      = "aws-load-balancer-controller"
+      "app.kubernetes.io/component" = "controller"
+    }
+  }
+}
+
+resource "aws_eks_pod_identity_association" "alb_controller" {
+  count           = var.install_alb_controller_prereqs ? 1 : 0
+  cluster_name    = var.cluster_name
+  namespace       = "kube-system"
+  service_account = "aws-load-balancer-controller"
+  role_arn        = aws_iam_role.alb_controller[0].arn
+  depends_on      = [kubernetes_service_account_v1.alb_controller]
 }

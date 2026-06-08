@@ -1,0 +1,37 @@
+region       = "us-east-1"
+cluster_name = "my-eks-cluster"
+k8s_version  = "1.35"
+
+vpc_id   = "vpc-xxxxxxxxxxxxxxxxx"
+vpc_cidr = "10.0.0.0/16"
+
+# 每个 subnet 必须在不同 AZ（VPC Endpoint 要求）
+private_subnet_ids = [
+  "subnet-aaaaaaaaaaaaaaaaa",   # AZ-a
+  "subnet-bbbbbbbbbbbbbbbbb",   # AZ-b
+]
+
+# 私有集群可为空
+public_subnet_ids = []
+
+cluster_mode               = "private"
+service_ipv4_cidr          = "172.20.0.0/16"    # 按集群实际填
+enable_deletion_protection = true
+
+# KMS 加密（可选）
+# kms_key_arn = "arn:aws:kms:us-east-1:123456789012:key/xxx"
+
+# 让堡垒机 / DX 能连 EKS API
+# extra_api_ingress_security_group_ids = ["sg-bastion"]
+# extra_api_ingress_cidrs              = ["10.100.0.0/16"]
+
+# 额外 cluster admin（非 apply 身份）
+# extra_cluster_admin_role_arns = ["arn:aws:iam::123456789012:role/ops-team"]
+
+###############################################################################
+# VPC Endpoints 开关
+###############################################################################
+# 默认 true：创建 13 个 Interface + 1 个 S3 Gateway endpoint
+# 客户已手动建好 endpoint 时设 false 跳过
+create_vpc_endpoints = true
+vpc_endpoints_mode   = "full"   # minimal = 4 个必需 / full = 13 个

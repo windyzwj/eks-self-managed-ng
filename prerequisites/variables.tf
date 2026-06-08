@@ -50,3 +50,39 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+###############################################################################
+# Addons 前置资源（SA + IAM + Pod Identity）
+###############################################################################
+
+variable "cluster_endpoint" {
+  description = "EKS API endpoint（kubernetes provider 连接用）。从 cluster/ output 获取。"
+  type        = string
+  default     = ""
+}
+
+variable "cluster_ca" {
+  description = "EKS 集群 CA 证书 base64（kubernetes provider 连接用）。从 cluster/ output 获取。"
+  type        = string
+  default     = ""
+}
+
+variable "install_cluster_autoscaler_prereqs" {
+  description = <<-EOT
+    是否创建 Cluster Autoscaler 的前置资源（SA + IAM role + Pod Identity）。
+    默认 true。helm install 在 MANUAL_PLUGINS.md 里手动装。
+    客户自带 CA 时设 false。
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "install_alb_controller_prereqs" {
+  description = <<-EOT
+    是否创建 ALB Controller 的前置资源（SA + IAM policy/role + Pod Identity）。
+    默认 true。helm install 在 MANUAL_PLUGINS.md 里手动装。
+    不需要 ALB Controller 时设 false。
+  EOT
+  type        = bool
+  default     = true
+}

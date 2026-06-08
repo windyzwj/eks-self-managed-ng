@@ -7,18 +7,25 @@ g7e）、LVM 存储、灵活定价（OD / Spot / ODCR / Capacity Block），且 
 适用于**私有集群**：平台团队拥有集群和集群级前置资源，应用团队在其上按需拉起/扩缩
 GPU 节点组。
 
-## 两段式结构（推荐）
+## 三段式结构
 
 ```
-prerequisites/    Part 1 — 平台侧，每集群 一次性（Terraform）
-                  IAM role + instance profile + EKS access entry +
-                  共享 GPU SG（EFA 自通）+ cluster SG 入向规则
-                  └─ MANUAL_PLUGINS.md: kubectl/helm 手动装 K8s GPU 插件
-                     （EFA + NVIDIA device plugin 等）
+cluster/          Step 1 — 创建 EKS 集群（Terraform）
+                  控制面 + 核心 Managed Addon（vpc-cni / kube-proxy /
+                  pod-identity-agent / CoreDNS / Metrics Server）
+                  + VPC Endpoints（带 create_vpc_endpoints 开关）
 
-node-group/       Part 2 — 客户侧，可重复（Terraform）
+prerequisites/    Step 2 — GPU 节点前置资源 + Addons SA/IAM（Terraform）
+                  GPU 节点 IAM role + instance profile + access entry +
+                  共享 GPU SG（EFA 自通）+ cluster SG 入向规则
+                  + CA 的 SA + IAM role + Pod Identity Association
+                  + ALB Controller 的 SA + IAM policy/role + Pod Identity
+                  └─ MANUAL_PLUGINS.md: 手动装 K8s 插件
+                     （EFA / NVIDIA device plugin / CA helm / ALB helm）
+
+node-group/       Step 3 — GPU 节点组（Terraform，可重复）
                   Launch Template（EFA 多网卡）+ ASG（无自愈）+
-                  扩缩容。引用 Part 1 的 output。每个节点池 apply 一次;
+                  扩缩容。引用 Step 2 的 output。每个节点池 apply 一次;
                   多个池（如 3 个 ODCR）用 for_each / 多份拷贝。
 
 legacy-single-file/   旧版单文件（仅供参考）
@@ -36,11 +43,14 @@ legacy-single-file/   旧版单文件（仅供参考）
 ## 流程
 
 ```
-1. 平台: cd prerequisites && terraform apply
-          └─ 复制 `node_group_tfvars_hint` output
-2. 平台: kubectl/helm 手动装 GPU 插件（prerequisites/MANUAL_PLUGINS.md）
-3. 应用团队: cd node-group && terraform apply（粘贴 hint + 填池子参数）
-   对每个额外池重复步骤 3
+1. 平台: cd cluster && terraform apply
+          → 拿到 cluster_endpoint / cluster_ca / cluster_sg_id / service_ipv4_cidr
+2. 平台: cd prerequisites && terraform apply
+          → 拿到 gpu_instance_profile_name / gpu_node_sg_id 等
+3. 平台: 手动装 K8s 插件（prerequisites/MANUAL_PLUGINS.md）
+          GPU plugin + CA helm + ALB helm
+4. 应用团队: cd node-group && terraform apply（粘贴 hint + 填池子参数）
+   对每个额外池重复步骤 4
 ```
 
 ## 核心设计点

@@ -118,6 +118,60 @@ kubectl describe node <gpu-node> | grep -E "nvidia.com/gpu|vpc.amazonaws.com/efa
 # vpc.amazonaws.com/efa: 16   (B300 = 16)
 ```
 
+## Cluster Autoscaler（需要 system 节点跑 pod）
+
+prerequisites/ 的 Terraform 已经创建了 SA (`cluster-autoscaler`) + IAM role + Pod
+Identity Association。这里只需要 helm install 装 controller pod。
+
+```bash
+helm repo add autoscaler https://kubernetes.github.io/autoscaler
+helm repo update
+
+helm install cluster-autoscaler autoscaler/cluster-autoscaler \
+  --namespace kube-system \
+  --version 9.57.0 \
+  --set fullnameOverride=cluster-autoscaler \
+  --set autoDiscovery.clusterName=<集群名> \
+  --set awsRegion=<region> \
+  --set image.tag=v1.35.0 \
+  --set rbac.serviceAccount.create=false \
+  --set rbac.serviceAccount.name=cluster-autoscaler \
+  --set replicaCount=2 \
+  --set extraArgs.balance-similar-node-groups=true \
+  --set extraArgs.skip-nodes-with-local-storage=false \
+  --set extraArgs.expander=least-waste \
+  --set extraArgs.max-node-provision-time=15m
+```
+
+- `rbac.serviceAccount.create=false` —— SA 已由 TF 创建,不要重复建
+- `image.tag` 跟 K8s 版本对齐（1.35 → v1.35.0）
+- 需要 **system 节点**才能调度 controller pod
+- 客户自带 CA 时跳过本段（prerequisites 里设 `install_cluster_autoscaler_prereqs=false`）
+
+## ALB Controller（需要 system 节点跑 pod）
+
+prerequisites/ 的 Terraform 已创建 SA (`aws-load-balancer-controller`) + IAM role/policy +
+Pod Identity Association。这里只需 helm install。
+
+```bash
+helm repo add eks https://aws.github.io/eks-charts
+helm repo update
+
+helm install aws-load-balancer-controller eks/aws-load-balancer-controller \
+  --namespace kube-system \
+  --version 1.16.0 \
+  --set clusterName=<集群名> \
+  --set region=<region> \
+  --set vpcId=<vpc-id> \
+  --set serviceAccount.create=false \
+  --set serviceAccount.name=aws-load-balancer-controller \
+  --set image.tag=v2.14.1 \
+  --set replicaCount=2
+```
+
+- `serviceAccount.create=false` —— SA 已由 TF 创建
+- 不需要 ALB Controller 时跳过本段（prerequisites 里设 `install_alb_controller_prereqs=false`）
+
 ## 排查
 
 `kubectl get pods -n kube-system -l <label> -o wide` 然后看：
