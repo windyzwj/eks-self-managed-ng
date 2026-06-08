@@ -96,11 +96,11 @@ Step 2 (prerequisites/)  →  Step 3 (node-group/)
 ```
 1. 平台: cd cluster && terraform apply
           → 拿到 cluster_endpoint / cluster_ca / cluster_sg_id / service_ipv4_cidr
-2. 平台: cd prerequisites && terraform apply
+2. 平台: cd ../prerequisites && terraform apply
           → 拿到 gpu_instance_profile_name / gpu_node_sg_id 等
 3. 平台: 手动装 K8s 插件（prerequisites/MANUAL_PLUGINS.md）
           GPU plugin + CA helm + ALB helm
-4. 应用团队: cd node-group && terraform apply（粘贴 hint + 填池子参数）
+4. 应用团队: cd ../node-group && terraform apply（粘贴 hint + 填池子参数）
    对每个额外池重复步骤 4
 ```
 
@@ -110,7 +110,7 @@ Step 2 (prerequisites/)  →  Step 3 (node-group/)
 1. 从已有集群收集 endpoint / ca / sg_id / cidr / vpc_id（见上面命令）
 2. 平台: cd prerequisites && terraform apply
 3. 平台: 手动装 K8s 插件（prerequisites/MANUAL_PLUGINS.md）
-4. 应用团队: cd node-group && terraform apply
+4. 应用团队: cd ../node-group && terraform apply
 ```
 
 ## 核心设计点
