@@ -231,6 +231,7 @@ resource "aws_eks_addon" "pod_identity_agent" {
 }
 
 resource "aws_eks_addon" "coredns" {
+  count                       = var.install_coredns ? 1 : 0
   cluster_name                = aws_eks_cluster.this.name
   addon_name                  = "coredns"
   addon_version               = data.aws_eks_addon_version.coredns.version
@@ -239,6 +240,7 @@ resource "aws_eks_addon" "coredns" {
 }
 
 resource "aws_eks_addon" "metrics_server" {
+  count                       = var.install_metrics_server ? 1 : 0
   cluster_name                = aws_eks_cluster.this.name
   addon_name                  = "metrics-server"
   addon_version               = data.aws_eks_addon_version.metrics_server.version

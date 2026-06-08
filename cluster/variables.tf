@@ -104,6 +104,27 @@ variable "create_vpc_endpoints" {
   default     = true
 }
 
+variable "install_coredns" {
+  description = <<-EOT
+    是否安装 CoreDNS EKS Managed Addon。CoreDNS 是 Deployment，需要 worker 节点
+    才能 Ready（pod 需要调度）。
+
+    如果你先建集群再起节点（分段式流程），第一次 apply 时设 false 跳过，
+    等 system 节点 Ready 后改成 true 再 apply。
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "install_metrics_server" {
+  description = <<-EOT
+    是否安装 Metrics Server EKS Managed Addon。同 CoreDNS，需要 worker 节点。
+    分段式流程第一次 apply 时可设 false。
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "vpc_endpoints_mode" {
   description = "VPC Endpoint 范围：minimal（4 个必需：eks/eks-auth/sts/ec2）或 full（+ecr/logs/ssm 等共 13 个）"
   type        = string
