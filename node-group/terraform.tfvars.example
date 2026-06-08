@@ -47,3 +47,26 @@ efa_installer_version = "1.48.0"
 
 # extra_node_labels = { team = "research" }
 # extra_asg_tags    = { Owner = "ml-platform", CostCenter = "1234" }
+
+###############################################################################
+# Spot 示例（替换上面的 purchase_mode / capacity_reservation_id 段）
+###############################################################################
+# name_prefix   = "eks-gpu-b300-spot"
+# instance_type = "p6-b300.48xlarge"
+# purchase_mode = "spot"
+# # capacity_reservation_id 不需要
+# # placement_group_name 可选（spot 不保证同 AZ 能拿到，不推荐 cluster PG）
+# subnet_ids    = ["subnet-aaa", "subnet-bbb"]  # 多 AZ 增加 spot 命中率
+# desired_size  = 1
+# min_size      = 0
+# max_size      = 4
+#
+# # Spot 行为说明：
+# #   - LT 里 instance_market_options = { market_type = "spot" }
+# #   - spot_instance_type = "one-time"（中断后不自动重新请求）
+# #   - instance_interruption_behavior = "terminate"（被回收直接终止）
+# #   - ASG suspended_processes=[ReplaceUnhealthy,AZRebalance] 照样生效：
+# #     spot 被回收 → 实例消失 → ASG desired 比 running 多 1 →
+# #     ASG 自动在 spot 池里再起一台（用 Launch process，没 suspend）
+# #   - 如果 spot 池子没容量 → InsufficientInstanceCapacity 等到有为止
+# #   - 要完全不自动补，手动把 desired 减 1（或让 CA 决定）
